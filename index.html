@@ -394,21 +394,21 @@
 
     let RAW_DATA = {};        // { username: { cumulative, daily } }
     let CURRENT_RANGE = 'all';
-    // Hardcoded participant Gist IDs — auto-loads on page open
-    let GIST_IDS = [
-      '4bbb605975e08d73e2c89fd7c003cb73',
-      '65b5b6a0b08bc23784d2dcf17d8a7564',
-      'c9e463371e3f1812ec66305db674567b',
-    ];
+    let GIST_IDS = [];         // array of Gist IDs (one per participant)
     let REFRESH_TIMER = null;
 
     // Chart.js instances (destroyed before re-render to avoid leaks)
     let chartInstances = {};
 
-    // ─── Auto-load on page open ────────────────────────────────
+    // ─── Init from URL hash ────────────────────────────────────
+    // Hash stores comma-separated Gist IDs for bookmarking, e.g.:
+    //   dashboard.html#abc123,def456,ghi789
     window.addEventListener('DOMContentLoaded', () => {
-      document.getElementById('gistInput').value = GIST_IDS.join('\n');
-      loadDashboard();
+      const hash = location.hash.slice(1);
+      if (hash) {
+        document.getElementById('gistInput').value = hash.split(',').join('\n');
+        loadDashboard();
+      }
     });
 
     // ─── Parse Gist IDs from textarea ──────────────────────────
