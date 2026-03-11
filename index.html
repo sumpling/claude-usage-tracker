@@ -1,0 +1,845 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Claude Usage Tracker</title>
+  <!--
+    Interactive Dashboard for the Claude Usage Tracker.
+
+    Data flow:
+    1. Reads a shared GitHub Gist (one JSON file per participant)
+    2. Each file has { cumulative: {...}, daily: [{date, ...}, ...] }
+    3. Dashboard renders both all-time and filtered-by-date views
+
+    Features:
+    - Date range picker: filter all views to a custom window
+    - Quick filters: Today, 7d, 30d, All Time
+    - Leaderboards with animated bars
+    - Time-series line charts (tokens, cost over time)
+    - Model & tool breakdowns (donut + horizontal bar)
+    - Streak & active days display
+    - Auto-refresh toggle (polls Gist every 5 min)
+  -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
+  <style>
+    /* ─── Reset & Variables ────────────────────────────────────── */
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    :root {
+      --bg:        #0d1117;
+      --card:      #161b22;
+      --border:    #30363d;
+      --text:      #e6edf3;
+      --muted:     #8b949e;
+      --dim:       #484f58;
+      --accent-1:  #d4a574;
+      --accent-2:  #c084fc;
+      --grid:      #21262d;
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+      padding: 1.5rem;
+    }
+
+    /* ─── Header ──────────────────────────────────────────────── */
+    .header {
+      text-align: center;
+      margin-bottom: 1.5rem;
+    }
+
+    h1 {
+      font-size: 1.8rem;
+      background: linear-gradient(135deg, var(--accent-1), var(--accent-2));
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+
+    .subtitle { color: var(--muted); font-size: 0.9rem; margin-top: 0.2rem; }
+
+    /* ─── Setup ───────────────────────────────────────────────── */
+    #setup {
+      max-width: 420px;
+      margin: 4rem auto;
+      text-align: center;
+    }
+
+    input[type="text"], input[type="date"] {
+      padding: 0.6rem 0.8rem;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--card);
+      color: var(--text);
+      font-size: 0.9rem;
+    }
+
+    #setup input { width: 100%; margin: 0.8rem 0; }
+
+    button, .btn {
+      padding: 0.55rem 1.4rem;
+      border: none;
+      border-radius: 8px;
+      font-weight: 600;
+      font-size: 0.85rem;
+      cursor: pointer;
+      transition: opacity 0.2s;
+    }
+
+    button:hover, .btn:hover { opacity: 0.85; }
+
+    .btn-primary {
+      background: linear-gradient(135deg, var(--accent-1), var(--accent-2));
+      color: var(--bg);
+    }
+
+    .btn-ghost {
+      background: var(--card);
+      color: var(--text);
+      border: 1px solid var(--border);
+    }
+
+    .btn-ghost.active {
+      background: var(--accent-2);
+      color: var(--bg);
+      border-color: var(--accent-2);
+    }
+
+    /* ─── Controls Bar ────────────────────────────────────────── */
+    .controls {
+      display: flex;
+      align-items: center;
+      gap: 0.6rem;
+      flex-wrap: wrap;
+      margin-bottom: 1.5rem;
+      padding: 0.8rem 1rem;
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+    }
+
+    .controls label {
+      color: var(--muted);
+      font-size: 0.8rem;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+
+    .spacer { flex: 1; }
+
+    .refresh-toggle {
+      display: flex;
+      align-items: center;
+      gap: 0.4rem;
+      font-size: 0.8rem;
+      color: var(--muted);
+    }
+
+    .refresh-toggle input { accent-color: var(--accent-2); }
+
+    /* ─── Layout ──────────────────────────────────────────────── */
+    #dashboard { display: none; max-width: 1200px; margin: 0 auto; }
+
+    .stats-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+      gap: 0.8rem;
+      margin-bottom: 1.5rem;
+    }
+
+    .stat-card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 1rem;
+    }
+
+    .stat-card .label {
+      font-size: 0.7rem;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+
+    .stat-card .value {
+      font-size: 1.5rem;
+      font-weight: 700;
+      margin-top: 0.2rem;
+    }
+
+    .stat-card .delta {
+      font-size: 0.75rem;
+      margin-top: 0.15rem;
+    }
+
+    .delta.up { color: #34d399; }
+    .delta.neutral { color: var(--dim); }
+
+    /* ─── Section Titles ──────────────────────────────────────── */
+    .section-title {
+      font-size: 1.05rem;
+      margin: 1.8rem 0 0.8rem;
+      padding-bottom: 0.3rem;
+      border-bottom: 1px solid var(--grid);
+    }
+
+    /* ─── Leaderboard ─────────────────────────────────────────── */
+    .leaderboard-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
+      gap: 1rem;
+      margin-bottom: 1.5rem;
+    }
+
+    .lb-card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 1rem;
+    }
+
+    .lb-card h3 {
+      font-size: 0.8rem;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      margin-bottom: 0.6rem;
+    }
+
+    .lb-row {
+      display: flex;
+      align-items: center;
+      padding: 0.4rem 0;
+      gap: 0.6rem;
+    }
+
+    .lb-rank {
+      width: 1.8rem;
+      text-align: center;
+      font-size: 0.9rem;
+    }
+
+    .lb-name {
+      width: 5rem;
+      font-weight: 600;
+      font-size: 0.9rem;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .lb-bar-wrap {
+      flex: 1;
+      position: relative;
+      height: 22px;
+    }
+
+    .lb-bar {
+      height: 100%;
+      border-radius: 4px;
+      background: linear-gradient(90deg, var(--accent-1), var(--accent-2));
+      opacity: 0.45;
+      transition: width 0.5s ease;
+    }
+
+    .lb-val {
+      position: absolute;
+      right: 0.4rem;
+      top: 50%;
+      transform: translateY(-50%);
+      font-size: 0.8rem;
+      color: var(--muted);
+    }
+
+    /* ─── Charts ──────────────────────────────────────────────── */
+    .charts-row {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 1rem;
+      margin-bottom: 1rem;
+    }
+
+    .chart-card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 1rem;
+    }
+
+    .chart-card h3 {
+      font-size: 0.8rem;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      margin-bottom: 0.6rem;
+    }
+
+    .full-width { grid-column: 1 / -1; }
+
+    .last-updated {
+      text-align: center;
+      color: var(--dim);
+      font-size: 0.75rem;
+      margin-top: 1.5rem;
+      padding-bottom: 2rem;
+    }
+
+    /* ─── Responsive ──────────────────────────────────────────── */
+    @media (max-width: 700px) {
+      .charts-row { grid-template-columns: 1fr; }
+      .leaderboard-grid { grid-template-columns: 1fr; }
+      body { padding: 0.8rem; }
+    }
+  </style>
+</head>
+<body>
+
+  <!-- ─── Setup Screen ──────────────────────────────────────── -->
+  <div id="setup">
+    <div class="header">
+      <h1>Claude Usage Tracker</h1>
+      <p class="subtitle">Enter Gist IDs to load the leaderboard</p>
+    </div>
+    <textarea id="gistInput" rows="3" style="width:100%;margin:0.8rem 0;padding:0.6rem 0.8rem;border:1px solid var(--border);border-radius:8px;background:var(--card);color:var(--text);font-size:0.9rem;resize:vertical;" placeholder="Paste Gist IDs (one per line, or comma-separated)&#10;e.g.:&#10;abc123def456&#10;789xyz000aaa"></textarea>
+    <br>
+    <button class="btn-primary" onclick="loadDashboard()">Load Dashboard</button>
+  </div>
+
+  <!-- ─── Main Dashboard ────────────────────────────────────── -->
+  <div id="dashboard">
+    <div class="header">
+      <h1>Claude Usage Tracker</h1>
+      <p class="subtitle" id="playerCount"></p>
+    </div>
+
+    <!-- Controls: date range + quick filters + auto-refresh -->
+    <div class="controls">
+      <label>Range:</label>
+      <button class="btn btn-ghost" onclick="setRange('today')">Today</button>
+      <button class="btn btn-ghost" onclick="setRange('7d')">7d</button>
+      <button class="btn btn-ghost" onclick="setRange('30d')">30d</button>
+      <button class="btn btn-ghost active" onclick="setRange('all')">All Time</button>
+      <span style="color:var(--dim); margin: 0 0.3rem;">|</span>
+      <input type="date" id="startDate" onchange="setRange('custom')">
+      <span style="color:var(--dim);">to</span>
+      <input type="date" id="endDate" onchange="setRange('custom')">
+      <div class="spacer"></div>
+      <div class="refresh-toggle">
+        <input type="checkbox" id="autoRefresh" onchange="toggleAutoRefresh()">
+        <label for="autoRefresh">Auto-refresh (5m)</label>
+      </div>
+    </div>
+
+    <!-- Aggregate stat cards -->
+    <div class="stats-grid" id="statsGrid"></div>
+
+    <!-- Leaderboards -->
+    <h2 class="section-title">Leaderboards</h2>
+    <div class="leaderboard-grid" id="leaderboards"></div>
+
+    <!-- Time-series charts -->
+    <h2 class="section-title">Activity Over Time</h2>
+    <div class="charts-row">
+      <div class="chart-card full-width">
+        <h3>Daily Tokens</h3>
+        <canvas id="dailyTokensChart"></canvas>
+      </div>
+    </div>
+    <div class="charts-row">
+      <div class="chart-card">
+        <h3>Daily Cost</h3>
+        <canvas id="dailyCostChart"></canvas>
+      </div>
+      <div class="chart-card">
+        <h3>Daily Sessions</h3>
+        <canvas id="dailySessionsChart"></canvas>
+      </div>
+    </div>
+
+    <!-- Breakdowns -->
+    <h2 class="section-title">Breakdowns</h2>
+    <div class="charts-row">
+      <div class="chart-card">
+        <h3>Tokens by User</h3>
+        <canvas id="tokensChart"></canvas>
+      </div>
+      <div class="chart-card">
+        <h3>Estimated Cost by User</h3>
+        <canvas id="costChart"></canvas>
+      </div>
+    </div>
+    <div class="charts-row">
+      <div class="chart-card">
+        <h3>Model Usage (combined)</h3>
+        <canvas id="modelsChart"></canvas>
+      </div>
+      <div class="chart-card">
+        <h3>Top Tools (combined)</h3>
+        <canvas id="toolsChart"></canvas>
+      </div>
+    </div>
+
+    <p class="last-updated" id="lastUpdated"></p>
+  </div>
+
+  <script>
+    // ─── Globals ────────────────────────────────────────────────
+    const COLORS = [
+      '#d4a574', '#c084fc', '#67e8f9', '#fbbf24', '#34d399',
+      '#f87171', '#a78bfa', '#fb923c', '#38bdf8', '#4ade80',
+    ];
+
+    let RAW_DATA = {};        // { username: { cumulative, daily } }
+    let CURRENT_RANGE = 'all';
+    let GIST_IDS = [];         // array of Gist IDs (one per participant)
+    let REFRESH_TIMER = null;
+
+    // Chart.js instances (destroyed before re-render to avoid leaks)
+    let chartInstances = {};
+
+    // ─── Init from URL hash ────────────────────────────────────
+    // Hash stores comma-separated Gist IDs for bookmarking, e.g.:
+    //   dashboard.html#abc123,def456,ghi789
+    window.addEventListener('DOMContentLoaded', () => {
+      const hash = location.hash.slice(1);
+      if (hash) {
+        document.getElementById('gistInput').value = hash.split(',').join('\n');
+        loadDashboard();
+      }
+    });
+
+    // ─── Parse Gist IDs from textarea ──────────────────────────
+    function parseGistIds() {
+      const raw = document.getElementById('gistInput')?.value || '';
+      // Accept comma-separated, newline-separated, or mixed
+      return raw.split(/[\n,]+/).map(s => s.trim()).filter(Boolean);
+    }
+
+    // ─── Fetch data from multiple Gists in parallel ────────────
+    async function loadDashboard() {
+      const ids = parseGistIds();
+      if (ids.length === 0) return alert('Please enter at least one Gist ID');
+      GIST_IDS = ids;
+      location.hash = ids.join(',');
+
+      try {
+        // Fetch all Gists concurrently
+        const results = await Promise.allSettled(
+          ids.map(id => fetch(`https://api.github.com/gists/${id}`).then(r => {
+            if (!r.ok) throw new Error(`Gist ${id}: HTTP ${r.status}`);
+            return r.json();
+          }))
+        );
+
+        RAW_DATA = {};
+        const errors = [];
+
+        for (let i = 0; i < results.length; i++) {
+          if (results[i].status === 'rejected') {
+            errors.push(`Gist ${ids[i]}: ${results[i].reason.message}`);
+            continue;
+          }
+
+          const gist = results[i].value;
+          for (const [filename, file] of Object.entries(gist.files)) {
+            if (!filename.endsWith('.json')) continue;
+            try {
+              const name = filename.replace('.json', '');
+              RAW_DATA[name] = JSON.parse(file.content);
+            } catch (e) {
+              console.warn(`Skipping ${filename}:`, e);
+            }
+          }
+        }
+
+        if (errors.length > 0) {
+          console.warn('Some Gists failed to load:', errors);
+        }
+
+        if (Object.keys(RAW_DATA).length === 0) {
+          return alert('No participant data found.\n' + errors.join('\n'));
+        }
+
+        document.getElementById('setup').style.display = 'none';
+        document.getElementById('dashboard').style.display = 'block';
+
+        renderAll();
+      } catch (err) {
+        alert(`Error loading Gists: ${err.message}`);
+      }
+    }
+
+    // ─── Date Range Logic ──────────────────────────────────────
+    // Filters each user's daily array to the selected window,
+    // then re-aggregates. This means ALL views update together.
+
+    function setRange(range) {
+      CURRENT_RANGE = range;
+
+      // Update button styles
+      document.querySelectorAll('.controls .btn-ghost').forEach(b => b.classList.remove('active'));
+      const labels = { today: 'Today', '7d': '7d', '30d': '30d', all: 'All Time' };
+      document.querySelectorAll('.controls .btn-ghost').forEach(b => {
+        if (b.textContent === labels[range]) b.classList.add('active');
+      });
+
+      renderAll();
+    }
+
+    function getDateBounds() {
+      const today = new Date();
+      const fmt = d => d.toISOString().slice(0, 10);
+
+      switch (CURRENT_RANGE) {
+        case 'today':
+          return { start: fmt(today), end: fmt(today) };
+        case '7d': {
+          const d = new Date(today);
+          d.setDate(d.getDate() - 6);
+          return { start: fmt(d), end: fmt(today) };
+        }
+        case '30d': {
+          const d = new Date(today);
+          d.setDate(d.getDate() - 29);
+          return { start: fmt(d), end: fmt(today) };
+        }
+        case 'custom':
+          return {
+            start: document.getElementById('startDate').value || '2000-01-01',
+            end: document.getElementById('endDate').value || fmt(today),
+          };
+        default: // 'all'
+          return { start: '2000-01-01', end: '2100-01-01' };
+      }
+    }
+
+    function filterDaily(daily, bounds) {
+      return daily.filter(d => d.date >= bounds.start && d.date <= bounds.end);
+    }
+
+    // Re-aggregate daily entries into a cumulative-style object
+    function aggregateDaily(days) {
+      const result = {
+        total_sessions: 0, total_input_tokens: 0, total_output_tokens: 0,
+        total_tokens: 0, total_duration_hours: 0, estimated_cost_usd: 0,
+        agent_spawns: 0, num_projects: 0, models: {}, tools: {}, projects: [],
+      };
+
+      const projects = new Set();
+      for (const d of days) {
+        result.total_sessions += d.total_sessions || 0;
+        result.total_input_tokens += d.total_input_tokens || 0;
+        result.total_output_tokens += d.total_output_tokens || 0;
+        result.total_tokens += d.total_tokens || 0;
+        result.total_duration_hours += d.total_duration_hours || 0;
+        result.estimated_cost_usd += d.estimated_cost_usd || 0;
+        result.agent_spawns += d.agent_spawns || 0;
+        for (const p of (d.projects || [])) projects.add(p);
+        for (const [m, c] of Object.entries(d.models || {}))
+          result.models[m] = (result.models[m] || 0) + c;
+        for (const [t, c] of Object.entries(d.tools || {}))
+          result.tools[t] = (result.tools[t] || 0) + c;
+      }
+      result.projects = [...projects].sort();
+      result.num_projects = projects.size;
+      result.total_duration_hours = Math.round(result.total_duration_hours * 100) / 100;
+      result.estimated_cost_usd = Math.round(result.estimated_cost_usd * 100) / 100;
+      return result;
+    }
+
+    // Get filtered stats per user
+    function getFilteredStats() {
+      const bounds = getDateBounds();
+      const result = {};
+
+      for (const [name, data] of Object.entries(RAW_DATA)) {
+        if (CURRENT_RANGE === 'all' && data.cumulative) {
+          // Use pre-computed cumulative for "all time" (includes streak etc.)
+          result[name] = { stats: data.cumulative, daily: data.daily || [] };
+        } else {
+          const days = filterDaily(data.daily || [], bounds);
+          result[name] = { stats: aggregateDaily(days), daily: data.daily || [] };
+        }
+      }
+      return { users: result, bounds };
+    }
+
+    // ─── Auto-refresh ──────────────────────────────────────────
+    function toggleAutoRefresh() {
+      if (document.getElementById('autoRefresh').checked) {
+        REFRESH_TIMER = setInterval(loadDashboard, 5 * 60 * 1000);
+      } else {
+        clearInterval(REFRESH_TIMER);
+        REFRESH_TIMER = null;
+      }
+    }
+
+    // ─── Master render ─────────────────────────────────────────
+    function renderAll() {
+      const { users, bounds } = getFilteredStats();
+      const names = Object.keys(users);
+
+      document.getElementById('playerCount').textContent =
+        `${names.length} player${names.length > 1 ? 's' : ''} tracked`;
+
+      renderStatCards(users);
+      renderLeaderboards(users);
+      renderTimeSeries(users, bounds);
+      renderBreakdowns(users);
+      renderLastUpdated();
+    }
+
+    // ─── Stat Cards ────────────────────────────────────────────
+    function renderStatCards(users) {
+      const totals = {
+        sessions: 0, tokens: 0, hours: 0, cost: 0, agents: 0,
+        projects: new Set(), streak: 0, activeDays: 0,
+      };
+
+      for (const { stats } of Object.values(users)) {
+        totals.sessions += stats.total_sessions || 0;
+        totals.tokens += stats.total_tokens || 0;
+        totals.hours += stats.total_duration_hours || 0;
+        totals.cost += stats.estimated_cost_usd || 0;
+        totals.agents += stats.agent_spawns || 0;
+        totals.streak = Math.max(totals.streak, stats.current_streak_days || 0);
+        totals.activeDays += stats.total_active_days || 0;
+        for (const p of (stats.projects || [])) totals.projects.add(p);
+      }
+
+      const cards = [
+        { label: 'Total Sessions',  value: totals.sessions.toLocaleString() },
+        { label: 'Total Tokens',    value: fmtTokens(totals.tokens) },
+        { label: 'Hours w/ Claude', value: totals.hours.toFixed(1) + 'h' },
+        { label: 'Est. Cost',       value: '$' + totals.cost.toFixed(2) },
+        { label: 'Agent Spawns',    value: totals.agents.toLocaleString() },
+        { label: 'Projects',        value: totals.projects.size.toLocaleString() },
+        { label: 'Best Streak',     value: totals.streak + 'd' },
+        { label: 'Active Days',     value: totals.activeDays.toLocaleString() },
+      ];
+
+      document.getElementById('statsGrid').innerHTML = cards.map(c => `
+        <div class="stat-card">
+          <div class="label">${c.label}</div>
+          <div class="value">${c.value}</div>
+        </div>
+      `).join('');
+    }
+
+    // ─── Leaderboards ──────────────────────────────────────────
+    function renderLeaderboards(users) {
+      const boards = [
+        { title: 'Total Tokens',   key: 'total_tokens',         fmt: fmtTokens },
+        { title: 'Est. Cost',      key: 'estimated_cost_usd',   fmt: v => '$' + v.toFixed(2) },
+        { title: 'Sessions',       key: 'total_sessions',       fmt: v => v.toLocaleString() },
+        { title: 'Hours',          key: 'total_duration_hours',  fmt: v => v.toFixed(1) + 'h' },
+        { title: 'Agent Spawns',   key: 'agent_spawns',         fmt: v => v.toLocaleString() },
+        { title: 'Projects',       key: 'num_projects',         fmt: v => v.toLocaleString() },
+      ];
+
+      document.getElementById('leaderboards').innerHTML = boards.map(board => {
+        const sorted = Object.entries(users)
+          .map(([name, { stats }]) => ({ name, val: stats[board.key] || 0 }))
+          .sort((a, b) => b.val - a.val);
+
+        const maxVal = sorted[0]?.val || 1;
+        const medals = ['&#x1F947;', '&#x1F948;', '&#x1F949;'];
+
+        const rows = sorted.map((u, i) => {
+          const pct = (u.val / maxVal * 100).toFixed(1);
+          const medal = i < 3 ? medals[i] : `<span style="color:var(--dim)">${i + 1}</span>`;
+          return `
+            <div class="lb-row">
+              <div class="lb-rank">${medal}</div>
+              <div class="lb-name" title="${u.name}">${u.name}</div>
+              <div class="lb-bar-wrap">
+                <div class="lb-bar" style="width:${pct}%"></div>
+                <span class="lb-val">${board.fmt(u.val)}</span>
+              </div>
+            </div>`;
+        }).join('');
+
+        return `<div class="lb-card"><h3>${board.title}</h3>${rows}</div>`;
+      }).join('');
+    }
+
+    // ─── Time Series Charts ────────────────────────────────────
+    function renderTimeSeries(users, bounds) {
+      // Collect all unique dates across all users
+      const allDates = new Set();
+      for (const { daily } of Object.values(users)) {
+        for (const d of daily) {
+          if (d.date >= bounds.start && d.date <= bounds.end) {
+            allDates.add(d.date);
+          }
+        }
+      }
+      const dates = [...allDates].sort();
+      const names = Object.keys(users);
+
+      // Build per-user data indexed by date for quick lookup
+      const userByDate = {};
+      for (const [name, { daily }] of Object.entries(users)) {
+        userByDate[name] = {};
+        for (const d of daily) userByDate[name][d.date] = d;
+      }
+
+      // Daily tokens line chart
+      makeChart('dailyTokensChart', 'line', {
+        labels: dates,
+        datasets: names.map((name, i) => ({
+          label: name,
+          data: dates.map(d => userByDate[name][d]?.total_tokens || 0),
+          borderColor: COLORS[i % COLORS.length],
+          backgroundColor: COLORS[i % COLORS.length] + '22',
+          fill: true,
+          tension: 0.3,
+          pointRadius: dates.length > 30 ? 0 : 3,
+        })),
+      }, { scales: timeScales() });
+
+      // Daily cost
+      makeChart('dailyCostChart', 'line', {
+        labels: dates,
+        datasets: names.map((name, i) => ({
+          label: name,
+          data: dates.map(d => userByDate[name][d]?.estimated_cost_usd || 0),
+          borderColor: COLORS[i % COLORS.length],
+          tension: 0.3,
+          pointRadius: dates.length > 30 ? 0 : 3,
+        })),
+      }, { scales: timeScales() });
+
+      // Daily sessions
+      makeChart('dailySessionsChart', 'bar', {
+        labels: dates,
+        datasets: names.map((name, i) => ({
+          label: name,
+          data: dates.map(d => userByDate[name][d]?.total_sessions || 0),
+          backgroundColor: COLORS[i % COLORS.length] + '88',
+        })),
+      }, { scales: timeScales({ stacked: true }) });
+    }
+
+    // ─── Breakdown Charts ──────────────────────────────────────
+    function renderBreakdowns(users) {
+      const names = Object.keys(users);
+
+      // Tokens by user (stacked input/output)
+      makeChart('tokensChart', 'bar', {
+        labels: names,
+        datasets: [
+          {
+            label: 'Input',
+            data: names.map(n => users[n].stats.total_input_tokens || 0),
+            backgroundColor: COLORS[0] + '99',
+          },
+          {
+            label: 'Output',
+            data: names.map(n => users[n].stats.total_output_tokens || 0),
+            backgroundColor: COLORS[1] + '99',
+          },
+        ],
+      }, { scales: { x: { stacked: true, ...axisStyle() }, y: { stacked: true, ...axisStyle() } } });
+
+      // Cost by user
+      makeChart('costChart', 'bar', {
+        labels: names,
+        datasets: [{
+          label: 'Est. Cost (USD)',
+          data: names.map(n => users[n].stats.estimated_cost_usd || 0),
+          backgroundColor: names.map((_, i) => COLORS[i % COLORS.length] + '99'),
+        }],
+      }, { scales: { x: axisStyle(), y: axisStyle() } });
+
+      // Models donut (combined)
+      const allModels = {};
+      for (const { stats } of Object.values(users)) {
+        for (const [m, c] of Object.entries(stats.models || {})) {
+          const short = m.replace('claude-', '').replace(/-\d{8}$/, '');
+          allModels[short] = (allModels[short] || 0) + c;
+        }
+      }
+      const mNames = Object.keys(allModels);
+      makeChart('modelsChart', 'doughnut', {
+        labels: mNames,
+        datasets: [{
+          data: Object.values(allModels),
+          backgroundColor: mNames.map((_, i) => COLORS[i % COLORS.length]),
+        }],
+      }, { plugins: { legend: { labels: { color: '#8b949e' } } } });
+
+      // Tools horizontal bar (top 10)
+      const allTools = {};
+      for (const { stats } of Object.values(users)) {
+        for (const [t, c] of Object.entries(stats.tools || {})) {
+          allTools[t] = (allTools[t] || 0) + c;
+        }
+      }
+      const topTools = Object.entries(allTools).sort((a, b) => b[1] - a[1]).slice(0, 10);
+      makeChart('toolsChart', 'bar', {
+        labels: topTools.map(t => t[0]),
+        datasets: [{
+          data: topTools.map(t => t[1]),
+          backgroundColor: topTools.map((_, i) => COLORS[i % COLORS.length] + '99'),
+        }],
+      }, { indexAxis: 'y', plugins: { legend: { display: false } }, scales: { x: axisStyle(), y: axisStyle() } });
+    }
+
+    // ─── Chart Helpers ─────────────────────────────────────────
+    function makeChart(id, type, data, extraOpts = {}) {
+      if (chartInstances[id]) chartInstances[id].destroy();
+      const ctx = document.getElementById(id);
+      chartInstances[id] = new Chart(ctx, {
+        type,
+        data,
+        options: {
+          responsive: true,
+          plugins: { legend: { labels: { color: '#8b949e' } } },
+          ...extraOpts,
+        },
+      });
+    }
+
+    function axisStyle() {
+      return { ticks: { color: '#8b949e' }, grid: { color: '#21262d' } };
+    }
+
+    function timeScales(extra = {}) {
+      return {
+        x: {
+          ...axisStyle(),
+          stacked: extra.stacked || false,
+          ticks: {
+            color: '#8b949e',
+            maxTicksLimit: 12,
+            maxRotation: 45,
+          },
+        },
+        y: { ...axisStyle(), stacked: extra.stacked || false },
+      };
+    }
+
+    function fmtTokens(n) {
+      if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + 'M';
+      if (n >= 1_000) return (n / 1_000).toFixed(1) + 'K';
+      return n.toString();
+    }
+
+    function renderLastUpdated() {
+      const timestamps = Object.values(RAW_DATA)
+        .map(d => d.cumulative?.last_updated)
+        .filter(Boolean)
+        .sort();
+      if (timestamps.length) {
+        const latest = new Date(timestamps[timestamps.length - 1]);
+        document.getElementById('lastUpdated').textContent =
+          `Last sync: ${latest.toLocaleString()}`;
+      }
+    }
+  </script>
+</body>
+</html>
