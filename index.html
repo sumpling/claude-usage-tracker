@@ -279,6 +279,33 @@
 
     .full-width { grid-column: 1 / -1; }
 
+    /* ─── Daily Wins ────────────────────────────────────────── */
+    .wins-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.85rem;
+    }
+
+    .wins-table th {
+      text-align: left;
+      color: var(--muted);
+      font-size: 0.7rem;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      padding: 0.3rem 0.5rem;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .wins-table td {
+      padding: 0.35rem 0.5rem;
+    }
+
+    .wins-table tr:not(:last-child) td {
+      border-bottom: 1px solid var(--grid);
+    }
+
+    .crown { font-size: 1rem; }
+
     .last-updated {
       text-align: center;
       color: var(--dim);
@@ -356,6 +383,20 @@
       <div class="chart-card">
         <h3>Daily Sessions</h3>
         <canvas id="dailySessionsChart"></canvas>
+      </div>
+    </div>
+
+    <!-- Daily Wins -->
+    <h2 class="section-title">Daily Cost Crown</h2>
+    <p style="color:var(--muted);font-size:0.8rem;margin:-0.4rem 0 0.8rem;">Each day, whoever spends the most earns a crown. Tracking since Mar 11, 2026.</p>
+    <div class="charts-row">
+      <div class="chart-card">
+        <h3>Win Tally</h3>
+        <div id="dailyWinsTally"></div>
+      </div>
+      <div class="chart-card">
+        <h3>Recent Winners</h3>
+        <div id="dailyWinsLog" style="max-height:220px;overflow-y:auto;"></div>
       </div>
     </div>
 
@@ -590,6 +631,7 @@
       renderLeaderboards(users);
       renderTimeSeries(users, bounds);
       renderBreakdowns(users);
+      renderDailyWins(users);
       renderLastUpdated();
     }
 
@@ -828,6 +870,106 @@
       if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + 'M';
       if (n >= 1_000) return (n / 1_000).toFixed(1) + 'K';
       return n.toString();
+    }
+
+    // ─── Daily Wins ──────────────────────────────────────────
+    const DAILY_WINS_START = '2026-03-11';
+
+    function renderDailyWins(users) {
+      const names = Object.keys(users);
+
+      // Build per-user daily data indexed by date
+      const userByDate = {};
+      for (const [name, data] of Object.entries(RAW_DATA)) {
+        userByDate[name] = {};
+        for (const d of (data.daily || [])) {
+          userByDate[name][d.date] = d;
+        }
+      }
+
+      // Collect all dates >= start date across all users
+      const allDates = new Set();
+      for (const [name, dateMap] of Object.entries(userByDate)) {
+        for (const date of Object.keys(dateMap)) {
+          if (date >= DAILY_WINS_START) allDates.add(date);
+        }
+      }
+      const dates = [...allDates].sort();
+
+      // For each date, find the winner (highest cost)
+      const wins = {};   // { username: count }
+      const log = [];    // [{ date, winner, cost }]
+      for (const name of names) wins[name] = 0;
+
+      for (const date of dates) {
+        let bestName = null;
+        let bestCost = 0;
+        let tie = false;
+
+        for (const name of names) {
+          const cost = userByDate[name]?.[date]?.estimated_cost_usd || 0;
+          if (cost > bestCost) {
+            bestCost = cost;
+            bestName = name;
+            tie = false;
+          } else if (cost === bestCost && cost > 0) {
+            tie = true;
+          }
+        }
+
+        if (bestName && bestCost > 0 && !tie) {
+          wins[bestName] = (wins[bestName] || 0) + 1;
+          log.push({ date, winner: bestName, cost: bestCost });
+        } else if (tie && bestCost > 0) {
+          // In a tie, both get a point
+          for (const name of names) {
+            const cost = userByDate[name]?.[date]?.estimated_cost_usd || 0;
+            if (cost === bestCost) {
+              wins[name] = (wins[name] || 0) + 1;
+            }
+          }
+          log.push({ date, winner: 'Tie', cost: bestCost });
+        }
+      }
+
+      // Render tally — sorted by wins descending
+      const sorted = Object.entries(wins).sort((a, b) => b[1] - a[1]);
+      const maxWins = sorted[0]?.[1] || 1;
+      const medals = ['&#x1F451;', '&#x1F948;', '&#x1F949;'];
+
+      document.getElementById('dailyWinsTally').innerHTML = `
+        <table class="wins-table">
+          <thead><tr><th></th><th>Player</th><th>Crowns</th><th></th></tr></thead>
+          <tbody>
+            ${sorted.map(([name, count], i) => {
+              const pct = (count / maxWins * 100).toFixed(1);
+              const medal = i < 3 ? medals[i] : '';
+              return `<tr>
+                <td>${medal}</td>
+                <td style="font-weight:600">${name}</td>
+                <td>${count}</td>
+                <td style="width:50%">
+                  <div style="height:16px;border-radius:3px;background:linear-gradient(90deg,var(--accent-1),var(--accent-2));opacity:0.45;width:${pct}%;transition:width 0.5s ease"></div>
+                </td>
+              </tr>`;
+            }).join('')}
+          </tbody>
+        </table>`;
+
+      // Render recent log — most recent first
+      const recent = log.slice().reverse().slice(0, 30);
+      document.getElementById('dailyWinsLog').innerHTML = recent.length === 0
+        ? '<p style="color:var(--dim);font-size:0.85rem;">No crowns awarded yet. Check back tomorrow!</p>'
+        : `<table class="wins-table">
+            <thead><tr><th>Date</th><th>Winner</th><th>Cost</th></tr></thead>
+            <tbody>
+              ${recent.map(r => `<tr>
+                <td style="color:var(--muted)">${r.date}</td>
+                <td style="font-weight:600">${r.winner === 'Tie' ? 'Tie' : '<span class="crown">&#x1F451;</span> ' + r.winner}</td>
+                <td style="color:var(--muted)">$${r.cost.toFixed(2)}</td>
+              </tr>`).join('')}
+            </tbody>
+          </table>`;
     }
 
     function renderLastUpdated() {
