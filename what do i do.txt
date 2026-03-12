@@ -1,0 +1,36 @@
+How it works
+
+Each person (one-time, ~3 min):
+  git clone https://github.com/sumpling/claude-usage-tracker.git
+  cd claude-usage-tracker
+  npm run setup
+  - Enter name, paste a GitHub token (gist scope, free) 
+	(https://github.com/settings/tokens/new?scopes=gist)
+  - Send you the Gist ID it prints
+
+You (one-time):
+  - Add their Gist ID to index.html in the repo, push
+
+After that — nothing. A cron job runs silently at 11:55 PM on each person's
+machine, parses their local Claude Code data, and pushes stats to their Gist. No
+one needs to do anything.
+
+To view the leaderboard:
+  - Visit https://sumpling.github.io/claude-usage-tracker/
+  - Or open dashboard.html locally
+
+What's tracked:
+  - Tokens (input/output, by model)
+  - Estimated cost
+  - Sessions & hours
+  - Agent spawns & tool usage
+  - Daily trends, streaks
+  - Projects
+
+What's NOT shared:
+  - Conversation content — never leaves anyone's machine
+  - GitHub tokens — stay in local config.json (gitignored)
+
+Adding a new friend:
+  - They clone + npm run setup
+  - You add their Gist ID to index.html and push
