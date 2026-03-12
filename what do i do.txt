@@ -9,7 +9,7 @@ Each person (one-time, ~3 min):
   - Send you the Gist ID it prints
 
 You (one-time):
-  - Add their Gist ID to index.html in the repo, push
+  - Add their Gist ID to gist-ids.txt (one per line), push
 
 After that — nothing. A cron job runs silently at 11:55 PM on each person's
 machine, parses their local Claude Code data, and pushes stats to their Gist. No
@@ -33,4 +33,4 @@ What's NOT shared:
 
 Adding a new friend:
   - They clone + npm run setup
-  - You add their Gist ID to index.html and push
+  - You add their Gist ID to gist-ids.txt and push
