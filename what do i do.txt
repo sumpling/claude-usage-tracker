@@ -11,9 +11,9 @@ Each person (one-time, ~3 min):
 You (one-time):
   - Add their Gist ID to gist-ids.txt (one per line), push
 
-After that — nothing. A cron job runs silently at 11:55 PM on each person's
+After that — nothing. A launchd agent runs silently at 11:55 PM on each person's
 machine, parses their local Claude Code data, and pushes stats to their Gist. No
-one needs to do anything.
+one needs to do anything. If the Mac is asleep at 11:55 PM, it syncs on wake.
 
 To view the leaderboard:
   - Visit https://sumpling.github.io/claude-usage-tracker/

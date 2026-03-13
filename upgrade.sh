@@ -1,111 +1,46 @@
 #!/usr/bin/env bash
 # ═══════════════════════════════════════════════════════════════════════════
-# Claude Usage Tracker — One-Time Setup
+# Claude Usage Tracker — Upgrade
 # ═══════════════════════════════════════════════════════════════════════════
-# This script:
-#   1. Prompts for your display name and GitHub token
-#   2. Auto-creates a secret Gist to store your stats
-#   3. Saves config locally (config.json — never uploaded)
-#   4. Does an initial stats push
-#   5. Installs a launchd agent so it runs automatically
+# Migrates from cron to launchd so missed syncs (laptop asleep/off)
+# automatically run when the Mac wakes up.
 #
-# Prerequisites:
-#   - Python 3.8+
-#   - A GitHub Personal Access Token with "gist" scope
-#     Create one at: https://github.com/settings/tokens/new?scopes=gist
+# Usage:  npm run upgrade
+#         (or: bash upgrade.sh)
 #
-# After setup, share your Gist ID with friends so they can add it to
-# their dashboard. That's it — everything else is automatic.
+# Safe to re-run — idempotent.
 # ═══════════════════════════════════════════════════════════════════════════
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-CONFIG_FILE="$SCRIPT_DIR/config.json"
 TRACKER_SCRIPT="$SCRIPT_DIR/tracker.py"
+CONFIG_FILE="$SCRIPT_DIR/config.json"
 
 echo "╔══════════════════════════════════════╗"
-echo "║   Claude Usage Tracker — Setup       ║"
+echo "║   Claude Usage Tracker — Upgrade     ║"
 echo "╚══════════════════════════════════════╝"
 echo ""
 
-# ─── Gather info ────────────────────────────────────────────────────────────
-
-read -rp "Your display name: " USERNAME
-echo ""
-echo "You need a GitHub Personal Access Token with 'gist' scope."
-echo "Create one here: https://github.com/settings/tokens/new?scopes=gist"
-echo ""
-read -rp "GitHub Personal Access Token: " GITHUB_TOKEN
-
-if [[ -z "$USERNAME" || -z "$GITHUB_TOKEN" ]]; then
-    echo "ERROR: Both fields are required."
+# ─── Verify config exists ─────────────────────────────────────────────────
+if [[ ! -f "$CONFIG_FILE" ]]; then
+    echo "ERROR: config.json not found. Run 'npm run setup' first."
     exit 1
 fi
 
-# ─── Create a secret Gist automatically ────────────────────────────────────
-# The Gist holds one file: <username>.json with your stats.
-# Secret = unlisted (only people with the ID/link can see it).
-
-echo ""
-echo "Creating your secret Gist..."
-
-GIST_RESPONSE=$(curl -s -X POST \
-    -H "Authorization: Bearer $GITHUB_TOKEN" \
-    -H "Accept: application/vnd.github+json" \
-    -d "{
-        \"description\": \"Claude Usage Tracker — $USERNAME\",
-        \"public\": false,
-        \"files\": {
-            \"$USERNAME.json\": {
-                \"content\": \"{}\"
-            }
-        }
-    }" \
-    "https://api.github.com/gists")
-
-# Extract Gist ID from response
-GIST_ID=$(echo "$GIST_RESPONSE" | python3 -c "import sys,json; print(json.load(sys.stdin).get('id',''))" 2>/dev/null)
-
-if [[ -z "$GIST_ID" ]]; then
-    echo "ERROR: Failed to create Gist. Check your token has 'gist' scope."
-    echo "Response: $GIST_RESPONSE"
-    exit 1
-fi
-
-echo "✓ Gist created: https://gist.github.com/$GIST_ID"
-
-# ─── Write config ───────────────────────────────────────────────────────────
-
-cat > "$CONFIG_FILE" <<EOF
-{
-    "username": "$USERNAME",
-    "github_token": "$GITHUB_TOKEN",
-    "gist_id": "$GIST_ID"
-}
-EOF
-
-echo "✓ Config saved to $CONFIG_FILE"
-
-# ─── Initial run ───────────────────────────────────────────────────────────
-
-echo ""
-echo "Running tracker for the first time..."
-python3 "$TRACKER_SCRIPT"
+echo "✓ Found existing config.json"
 
 # ─── Remove old cron job (if any) ─────────────────────────────────────────
 CRON_MARKER="# claude-usage-tracker"
 if crontab -l 2>/dev/null | grep -q "$CRON_MARKER"; then
-    echo ""
     echo "Removing old cron job..."
     (crontab -l 2>/dev/null | grep -v "$CRON_MARKER") | crontab - 2>/dev/null || true
     echo "✓ Old cron job removed."
+else
+    echo "  (No old cron job found — skipping)"
 fi
 
 # ─── Install launchd agent ────────────────────────────────────────────────
-# Uses launchd instead of cron so missed runs (laptop was asleep/off)
-# fire automatically when the Mac wakes up.
-
 PLIST_NAME="com.claude-usage-tracker.sync"
 PLIST_DIR="$HOME/Library/LaunchAgents"
 PLIST_PATH="$PLIST_DIR/$PLIST_NAME.plist"
@@ -150,7 +85,6 @@ cat > "$PLIST_PATH" <<PLIST
 </plist>
 PLIST
 
-# Unload first (if already loaded), then load the new version
 launchctl bootout "gui/$(id -u)/$PLIST_NAME" 2>/dev/null || true
 launchctl bootstrap "gui/$(id -u)" "$PLIST_PATH"
 
@@ -160,14 +94,8 @@ echo "✓ Launchd agent installed."
 
 echo ""
 echo "══════════════════════════════════════════════════"
-echo "  Setup complete!"
+echo "  Upgrade complete!"
 echo ""
-echo "  Your Gist ID:  $GIST_ID"
-echo ""
-echo "  ➤ Send this Gist ID to your friends"
-echo "  ➤ Collect their Gist IDs"
-echo "  ➤ Open dashboard.html and paste all IDs"
-echo ""
+echo "  Your config and Gist ID are unchanged."
 echo "  Stats sync daily at 11:55 PM (or on wake if missed)."
-echo "  Run manually anytime: python3 $TRACKER_SCRIPT"
 echo "══════════════════════════════════════════════════"

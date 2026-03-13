@@ -4,6 +4,7 @@
   "description": "Track and compare Claude Code usage with friends",
   "scripts": {
     "setup": "bash setup.sh",
+    "upgrade": "bash upgrade.sh",
     "track": "python3 tracker.py"
   }
 }
